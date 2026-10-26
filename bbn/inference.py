@@ -48,3 +48,75 @@ def _enumerate_all(bn, variables, assignment):
         p = bn.conditional_probability(first, value, assignment)
         total += p * _enumerate_all(bn, rest, {**assignment, first: value})
     return total
+
+
+# ---------------------------------------------------------------- Part D: variable elimination
+# A factor is a pair (variables, table). `variables` is a tuple of names and
+# `table` maps a tuple of values (one per variable, same order) to a number.
+from itertools import product
+
+
+def _cpt_to_factor(bn, name):
+    node = bn.nodes[name]
+    variables = tuple(node.parents) + (name,)
+    table = {}
+    for parent_values, row in node.cpt.items():
+        for value, p in row.items():
+            table[tuple(parent_values) + (value,)] = p
+    return variables, table
+
+
+def _restrict(factor, evidence):
+    """Keep only the rows that agree with the evidence, and drop those variables."""
+    variables, table = factor
+    keep = [i for i, v in enumerate(variables) if v not in evidence]
+    new_variables = tuple(variables[i] for i in keep)
+    new_table = {}
+    for assignment, p in table.items():
+        if all(assignment[i] == evidence[v] for i, v in enumerate(variables) if v in evidence):
+            new_table[tuple(assignment[i] for i in keep)] = p
+    return new_variables, new_table
+
+
+def _multiply(bn, f1, f2):
+    vars1, table1 = f1
+    vars2, table2 = f2
+    variables = vars1 + tuple(v for v in vars2 if v not in vars1)
+    table = {}
+    for combo in product(*[bn.nodes[v].values for v in variables]):
+        a = dict(zip(variables, combo))
+        table[combo] = table1[tuple(a[v] for v in vars1)] * table2[tuple(a[v] for v in vars2)]
+    return variables, table
+
+
+def _sum_out(var, factor):
+    variables, table = factor
+    i = variables.index(var)
+    new_variables = variables[:i] + variables[i + 1:]
+    new_table = {}
+    for assignment, p in table.items():
+        key = assignment[:i] + assignment[i + 1:]
+        new_table[key] = new_table.get(key, 0.0) + p
+    return new_variables, new_table
+
+
+def variable_elimination_ask(bn, query, evidence=None):
+    """P(query | evidence) by variable elimination. Same answers as enumeration_ask."""
+    evidence = dict(evidence or {})
+    _check_query(bn, query, evidence)
+
+    factors = [_restrict(_cpt_to_factor(bn, name), evidence) for name in bn.nodes]
+
+    hidden = [n for n in bn.nodes if n != query and n not in evidence]
+    for var in reversed(hidden):  # children first
+        related = [f for f in factors if var in f[0]]
+        others = [f for f in factors if var not in f[0]]
+        product_factor = related[0]
+        for f in related[1:]:
+            product_factor = _multiply(bn, product_factor, f)
+        factors = others + [_sum_out(var, product_factor)]
+
+    result = factors[0]
+    for f in factors[1:]:
+        result = _multiply(bn, result, f)
+    return _normalize({key[0]: p for key, p in result[1].items()})
